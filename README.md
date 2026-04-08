@@ -153,15 +153,6 @@ It is useful because it shows the exact point where the result flips:
 
 That flip point is the timing constraint made visible as a table.
 
-For presentation prep:
-- Use `npm run dev -- --format=matrix` when you want a compact comparison across scenarios
-- Use `npm run sweep:markdown` when you want a table you can paste into a note, blog post, or research chat
-
-## Notes on local output
-
-- the CLI now runs from compiled `dist/` output, so you should not see the earlier Node experimental type-stripping warning
-- if your terminal wraps tabular output oddly, prefer the timeline view or `npm run sweep:csv`
-
 ## References
 
 - EIP-7732: https://eips.ethereum.org/EIPS/eip-7732
