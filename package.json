@@ -1,0 +1,22 @@
+{
+  "name": "epbs-sim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Toy TypeScript simulator for ePBS slot timing and fork-choice consequences.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "dev": "npm run build --silent && node dist/index.js",
+    "sweep": "npm run build --silent && node dist/index.js --sweep --format=matrix",
+    "sweep:markdown": "npm run build --silent && node dist/index.js --sweep --format=markdown",
+    "sweep:csv": "npm run build --silent && node dist/index.js --sweep --format=csv",
+    "test": "npm run build --silent && vitest run"
+  },
+  "dependencies": {
+    "@types/node": "^25.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.3"
+  }
+}
