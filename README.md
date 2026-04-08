@@ -53,9 +53,16 @@ In plain English:
 - This does not implement real validator duties, proposer boost, or exact LMD-GHOST math.
 - Committee behavior is deterministic and configured as simple vote ratios.
 - Execution validity, blobs, data availability, inclusion lists, and payment settlement are out of scope.
+- Builder penalties for withholding are out of scope.
+- Payload validity is simplified to commitment/hash matching rather than full `process_execution_payload` validation.
+- Spec-ish timing uses `3s/6s/9s` based on an earlier draft snapshot. The exact slot-component cutoffs have shifted across revisions, so verify against the `consensus-specs` `dev` branch before treating these numbers as normative.
 - Two modes are supported:
   - `spec-ish`: uses the draft-style `t=3s` CL attestation, `t=6s` aggregates, `t=9s` PTC cutoff
   - `didactic`: uses a simplified teaching timeline closer to `0/3/4/6/8`
+
+## Client / gossip relevance
+
+This simulator is also relevant to client gossip handling. EIP-7732 separates beacon-block and execution-payload dissemination, and the toy models the timing constraint that gossip validation and payload-attestation handling must enforce when deciding whether a payload counts as present in time for fork choice.
 
 ## Local setup
 
