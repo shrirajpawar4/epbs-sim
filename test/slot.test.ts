@@ -32,10 +32,104 @@ describe('runSlot boundaries', () => {
   })
 })
 
+describe('payload dispositions', () => {
+  it('classifies withheld payloads explicitly', () => {
+    const result = runSlot({
+      slot: 200,
+      scenario: 'withheld',
+      builderRevealsAt: null,
+      builderValue: 1n
+    })
+
+    expect(result.payloadDisposition).toBe('WITHHELD')
+    expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
+  })
+
+  it('classifies late observation explicitly', () => {
+    const result = runSlot({
+      slot: 201,
+      scenario: 'late_observed',
+      builderRevealsAt: 8_700,
+      payloadObservedByPtcAt: 9_100,
+      builderValue: 1n
+    })
+
+    expect(result.payloadDisposition).toBe('LATE_BY_OBSERVATION')
+    expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
+  })
+
+  it('classifies commitment mismatch explicitly', () => {
+    const result = runSlot({
+      slot: 202,
+      scenario: 'bad_commitment',
+      builderRevealsAt: 6_100,
+      payloadHashMatchesCommit: false,
+      builderValue: 1n
+    })
+
+    expect(result.payloadDisposition).toBe('COMMITMENT_MISMATCH')
+    expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
+  })
+
+  it('classifies execution invalid payloads explicitly', () => {
+    const result = runSlot({
+      slot: 203,
+      scenario: 'execution_invalid',
+      builderRevealsAt: 6_100,
+      executionValid: false,
+      builderValue: 1n
+    })
+
+    expect(result.payloadDisposition).toBe('EXECUTION_INVALID')
+    expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
+  })
+
+  it('classifies gossip rejection explicitly', () => {
+    const result = runSlot({
+      slot: 204,
+      scenario: 'gossip_rejected',
+      builderRevealsAt: 6_100,
+      gossipAccepted: false,
+      builderValue: 1n
+    })
+
+    expect(result.payloadDisposition).toBe('GOSSIP_REJECTED')
+    expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
+  })
+
+  it('classifies PTC rejection explicitly when the payload is otherwise timely and valid', () => {
+    const result = runSlot({
+      slot: 205,
+      scenario: 'ptc_rejected',
+      builderRevealsAt: 6_100,
+      payloadObservedByPtcAt: 6_100,
+      ptcSize: 100,
+      ptcPresentRatio: 0.45,
+      builderValue: 1n
+    })
+
+    expect(result.payloadDisposition).toBe('PTC_REJECTED')
+    expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
+  })
+
+  it('classifies timely valid payloads explicitly', () => {
+    const result = runSlot({
+      slot: 206,
+      scenario: 'timely_valid',
+      builderRevealsAt: 6_100,
+      payloadObservedByPtcAt: 6_100,
+      builderValue: 1n
+    })
+
+    expect(result.payloadDisposition).toBe('TIMELY_VALID')
+    expect(result.canonicalHead).toBe('WITH_PAYLOAD')
+  })
+})
+
 describe('runSlot parameterized committees and adversarial cases', () => {
   it('respects custom committee sizes and ratios', () => {
     const result = runSlot({
-      slot: 200,
+      slot: 300,
       scenario: 'custom_committees',
       builderRevealsAt: 8_500,
       builderValue: 1n,
@@ -52,25 +146,6 @@ describe('runSlot parameterized committees and adversarial cases', () => {
     expect(result.canonicalHead).toBe('WITH_PAYLOAD')
   })
 
-  it('treats a payload hash mismatch as EMPTY by default', () => {
-    const scenario = buildScenarios('spec-ish').find((item) => item.scenario === 'hash_mismatch')
-    expect(scenario).toBeDefined()
-
-    const result = runSlot(scenario!)
-    expect(result.forkChoiceState.payloadHashMatchesCommit).toBe(false)
-    expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
-  })
-
-  it('allows noisy PTC support for an early payload without flipping the model to invalid', () => {
-    const scenario = buildScenarios('spec-ish').find((item) => item.scenario === 'early_payload_noisy_ptc')
-    expect(scenario).toBeDefined()
-
-    const result = runSlot(scenario!)
-    expect(result.payload?.revealedAt).toBeLessThan(SPECISH_TIMING.ptcCutoffMs)
-    expect(result.ptcTally.counts.PRESENT).toBeGreaterThan(result.ptcTally.counts.ABSENT)
-    expect(result.canonicalHead).toBe('WITH_PAYLOAD')
-  })
-
   it('models delayed network observation separately from actual reveal time', () => {
     const scenario = buildScenarios('spec-ish').find((item) => item.scenario === 'delayed_network_view')
     expect(scenario).toBeDefined()
@@ -78,6 +153,7 @@ describe('runSlot parameterized committees and adversarial cases', () => {
     const result = runSlot(scenario!)
     expect(result.payload?.revealedAt).toBeLessThan(SPECISH_TIMING.ptcCutoffMs)
     expect(result.forkChoiceState.payloadObservedByPtcAt).toBeGreaterThanOrEqual(SPECISH_TIMING.ptcCutoffMs)
+    expect(result.payloadDisposition).toBe('LATE_BY_OBSERVATION')
     expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
   })
 })
@@ -93,6 +169,7 @@ describe('property-style invariants', () => {
       })
 
       expect(result.canonicalHead).toBe('WITHOUT_PAYLOAD')
+      expect(result.payloadDisposition).toBe('LATE_BY_OBSERVATION')
     }
   })
 
@@ -123,15 +200,21 @@ describe('scenario presets and sweeps', () => {
       'late_payload',
       'hash_mismatch',
       'early_payload_noisy_ptc',
-      'delayed_network_view'
+      'delayed_network_view',
+      'execution_invalid',
+      'gossip_rejected',
+      'ptc_rejected'
     ])
-    expect(results.map((result) => result.canonicalHead)).toEqual([
-      'WITH_PAYLOAD',
-      'WITHOUT_PAYLOAD',
-      'WITHOUT_PAYLOAD',
-      'WITHOUT_PAYLOAD',
-      'WITH_PAYLOAD',
-      'WITHOUT_PAYLOAD'
+    expect(results.map((result) => result.payloadDisposition)).toEqual([
+      'TIMELY_VALID',
+      'WITHHELD',
+      'LATE_BY_OBSERVATION',
+      'COMMITMENT_MISMATCH',
+      'TIMELY_VALID',
+      'LATE_BY_OBSERVATION',
+      'EXECUTION_INVALID',
+      'GOSSIP_REJECTED',
+      'PTC_REJECTED'
     ])
   })
 
@@ -142,10 +225,10 @@ describe('scenario presets and sweeps', () => {
     })
 
     expect(points).toEqual([
-      expect.objectContaining({ revealAt: null, canonicalHead: 'WITHOUT_PAYLOAD' }),
-      expect.objectContaining({ revealAt: 8_999, canonicalHead: 'WITH_PAYLOAD' }),
-      expect.objectContaining({ revealAt: 9_000, canonicalHead: 'WITHOUT_PAYLOAD' }),
-      expect.objectContaining({ revealAt: 9_001, canonicalHead: 'WITHOUT_PAYLOAD' })
+      expect.objectContaining({ revealAt: null, payloadDisposition: 'WITHHELD', canonicalHead: 'WITHOUT_PAYLOAD' }),
+      expect.objectContaining({ revealAt: 8_999, payloadDisposition: 'TIMELY_VALID', canonicalHead: 'WITH_PAYLOAD' }),
+      expect.objectContaining({ revealAt: 9_000, payloadDisposition: 'LATE_BY_OBSERVATION', canonicalHead: 'WITHOUT_PAYLOAD' }),
+      expect.objectContaining({ revealAt: 9_001, payloadDisposition: 'LATE_BY_OBSERVATION', canonicalHead: 'WITHOUT_PAYLOAD' })
     ])
   })
 })

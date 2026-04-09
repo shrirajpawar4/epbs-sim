@@ -24,10 +24,29 @@ function payloadStatusFromPtcOutcome(ptcPresentMajority) {
 function canonicalHeadFromStatus(payloadStatus) {
     return payloadStatus === 'FULL' ? 'WITH_PAYLOAD' : 'WITHOUT_PAYLOAD';
 }
+function classifyPayloadDisposition(payload, timing, ptcPresentMajority) {
+    if (payload === null)
+        return 'WITHHELD';
+    if (!payload.gossipAccepted)
+        return 'GOSSIP_REJECTED';
+    if (!payload.hashMatchesCommit)
+        return 'COMMITMENT_MISMATCH';
+    if (!payload.executionValid)
+        return 'EXECUTION_INVALID';
+    if (payload.observedByPtcAt >= timing.ptcCutoffMs)
+        return 'LATE_BY_OBSERVATION';
+    if (!ptcPresentMajority)
+        return 'PTC_REJECTED';
+    return 'TIMELY_VALID';
+}
 function defaultPtcPresentRatio(payload, timing) {
     if (payload === null)
         return 0;
+    if (!payload.gossipAccepted)
+        return 0;
     if (!payload.hashMatchesCommit)
+        return 0;
+    if (!payload.executionValid)
         return 0;
     return payload.observedByPtcAt < timing.ptcCutoffMs ? 1 : 0;
 }
@@ -40,19 +59,34 @@ function resolvePayload(config, timing) {
     const observedByPtcAt = config.payloadObservedByPtcAt === null
         ? timing.ptcCutoffMs + 1
         : (config.payloadObservedByPtcAt ?? config.builderRevealsAt);
-    return revealPayload(config.builderRevealsAt, observedByPtcAt, config.payloadHashMatchesCommit ?? true);
+    return revealPayload(config.builderRevealsAt, observedByPtcAt, config.payloadHashMatchesCommit ?? true, config.executionValid ?? true, config.gossipAccepted ?? true);
 }
-function buildForkChoiceState(payload, timing, payloadStatus, canonicalHead) {
+function buildForkChoiceState(payload, timing, payloadDisposition, payloadStatus, canonicalHead) {
     return {
         slotNHeaderAccepted: true,
         payloadArrived: payload !== null,
         payloadObservedByPtcAt: payload?.observedByPtcAt ?? null,
         payloadTimelyByObservation: payload !== null && payload.observedByPtcAt < timing.ptcCutoffMs,
         payloadHashMatchesCommit: payload?.hashMatchesCommit ?? false,
+        payloadExecutionValid: payload?.executionValid ?? false,
+        payloadGossipAccepted: payload?.gossipAccepted ?? false,
+        payloadDisposition,
         payloadStatus,
         canonicalHead,
         nextSlotExtends: canonicalHead
     };
+}
+function logPayloadValidationEvent(payload, timing, payloadDisposition, log) {
+    const eventTime = payload?.revealedAt ?? timing.aggregateMs;
+    if (payloadDisposition === 'TIMELY_VALID') {
+        log(eventTime, 'validator', 'PAYLOAD_VALIDATION', 'Payload passes toy validation checks', {
+            disposition: payloadDisposition
+        });
+        return;
+    }
+    log(eventTime, 'validator', 'PAYLOAD_VALIDATION', 'Payload fails toy validation or timeliness checks', {
+        disposition: payloadDisposition
+    });
 }
 export function runSlot(config) {
     const mode = config.mode ?? 'spec-ish';
@@ -83,7 +117,9 @@ export function runSlot(config) {
         log(payload.revealedAt, 'builder', 'PAYLOAD_REVEALED', 'Builder reveals full execution payload', {
             blockHash: payload.blockHash,
             observedByPtcAt: payload.observedByPtcAt,
-            hashMatchesCommit: payload.hashMatchesCommit
+            hashMatchesCommit: payload.hashMatchesCommit,
+            executionValid: payload.executionValid,
+            gossipAccepted: payload.gossipAccepted
         });
     }
     else {
@@ -95,12 +131,16 @@ export function runSlot(config) {
     const ptcPresentRatio = config.ptcPresentRatio ?? defaultPtcPresentRatio(payload, timing);
     const ptcVotes = buildPtcVotes(ptcSize, ptcPresentRatio);
     const ptcTally = tallyPtcVotes(ptcVotes);
-    const payloadStatus = payloadStatusFromPtcOutcome(ptcTally.counts.PRESENT > ptcSize / 2);
+    const ptcPresentMajority = ptcTally.counts.PRESENT > ptcSize / 2;
+    const payloadDisposition = classifyPayloadDisposition(payload, timing, ptcPresentMajority);
+    const payloadStatus = payloadStatusFromPtcOutcome(ptcPresentMajority);
+    logPayloadValidationEvent(payload, timing, payloadDisposition, log);
     log(timing.ptcCutoffMs, 'ptc', 'PTC_VOTE', 'PTC votes on payload timeliness', {
         present: ptcTally.counts.PRESENT,
         absent: ptcTally.counts.ABSENT,
         committeeSize: ptcSize,
         observedPayloadAt: payload?.observedByPtcAt ?? null,
+        payloadDisposition,
         payloadStatus
     });
     const canonicalHead = canonicalHeadFromStatus(payloadStatus);
@@ -109,12 +149,13 @@ export function runSlot(config) {
         extends: canonicalHead,
         reason: canonicalHead === 'WITH_PAYLOAD'
             ? 'PTC majority marked payload timely, so slot N+1 extends FULL'
-            : 'PTC majority marked payload absent/late, so slot N+1 extends EMPTY'
+            : `Payload disposition ${payloadDisposition} collapses to EMPTY, so slot N+1 extends EMPTY`
     };
-    const forkChoiceState = buildForkChoiceState(payload, timing, payloadStatus, canonicalHead);
+    const forkChoiceState = buildForkChoiceState(payload, timing, payloadDisposition, payloadStatus, canonicalHead);
     log(timing.slotMs, 'fork-choice', 'NEXT_SLOT_FORK_CHOICE', 'Slot N+1 proposer extends the canonical branch', nextSlotDecision);
     log(timing.slotMs, 'slot', 'COMPLETE', 'Slot simulation complete', {
-        canonicalHead
+        canonicalHead,
+        payloadDisposition
     });
     timeline.sort((left, right) => left.t - right.t);
     return {
@@ -124,6 +165,7 @@ export function runSlot(config) {
         timing,
         header,
         payload,
+        payloadDisposition,
         payloadStatus,
         clAttestationVotes,
         clAttestationTally,
@@ -146,6 +188,7 @@ export function runRevealSweep(revealTimes, baseConfig) {
         return {
             revealAt,
             observedByPtcAt: result.payload?.observedByPtcAt ?? null,
+            payloadDisposition: result.payloadDisposition,
             payloadStatus: result.payloadStatus,
             ptcPresent: result.ptcTally.counts.PRESENT,
             ptcAbsent: result.ptcTally.counts.ABSENT,

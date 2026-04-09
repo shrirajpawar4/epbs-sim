@@ -4,6 +4,7 @@ export type SlotPhase =
   | 'HEADER_PROPOSED'
   | 'CL_ATTESTATION'
   | 'PAYLOAD_REVEALED'
+  | 'PAYLOAD_VALIDATION'
   | 'ATTESTATION_AGGREGATES'
   | 'PTC_VOTE'
   | 'NEXT_SLOT_FORK_CHOICE'
@@ -13,6 +14,14 @@ export type PTCVote = 'PRESENT' | 'ABSENT'
 export type CLAttestationVote = 'HEAD' | 'SKIP'
 export type PayloadStatus = 'PENDING' | 'FULL' | 'EMPTY'
 export type CanonicalHead = 'WITH_PAYLOAD' | 'WITHOUT_PAYLOAD'
+export type PayloadDisposition =
+  | 'TIMELY_VALID'
+  | 'WITHHELD'
+  | 'LATE_BY_OBSERVATION'
+  | 'COMMITMENT_MISMATCH'
+  | 'EXECUTION_INVALID'
+  | 'GOSSIP_REJECTED'
+  | 'PTC_REJECTED'
 
 export interface BuilderBid {
   builderId: string
@@ -35,6 +44,8 @@ export interface ExecutionPayload {
   revealedAt: number
   observedByPtcAt: number
   hashMatchesCommit: boolean
+  executionValid: boolean
+  gossipAccepted: boolean
 }
 
 export interface TimelineEvent {
@@ -63,6 +74,9 @@ export interface ForkChoiceState {
   payloadObservedByPtcAt: number | null
   payloadTimelyByObservation: boolean
   payloadHashMatchesCommit: boolean
+  payloadExecutionValid: boolean
+  payloadGossipAccepted: boolean
+  payloadDisposition: PayloadDisposition
   payloadStatus: PayloadStatus
   canonicalHead: CanonicalHead
   nextSlotExtends: CanonicalHead
@@ -75,6 +89,7 @@ export interface SlotResult {
   timing: TimingConfig
   header: SignedBeaconBlockHeader
   payload: ExecutionPayload | null
+  payloadDisposition: PayloadDisposition
   payloadStatus: PayloadStatus
   clAttestationVotes: CLAttestationVote[]
   clAttestationTally: VoteTally<CLAttestationVote>
@@ -102,11 +117,14 @@ export interface ScenarioDefinition {
   clAttesterSize?: number
   payloadObservedByPtcAt?: number | null
   payloadHashMatchesCommit?: boolean
+  executionValid?: boolean
+  gossipAccepted?: boolean
 }
 
 export interface SweepPoint {
   revealAt: number | null
   observedByPtcAt: number | null
+  payloadDisposition: PayloadDisposition
   payloadStatus: PayloadStatus
   ptcPresent: number
   ptcAbsent: number

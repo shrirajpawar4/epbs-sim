@@ -16,6 +16,7 @@ describe('CLI output', () => {
     expect(output).toContain('SLOT 1  HAPPY_PATH  [spec-ish]')
     expect(output).toContain('Signed beacon block header broadcast')
     expect(output).toContain('PTC votes on payload timeliness')
+    expect(output).toContain('Payload disposition: TIMELY_VALID')
     expect(output).toContain('Fork-choice view: arrived=true')
     expect(output).toContain('Canonical head after slot 2: WITH_PAYLOAD')
   })
@@ -32,7 +33,7 @@ describe('CLI output', () => {
     const markdown = runCli(['--sweep', '--format=markdown'])
     const csv = runCli(['--sweep', '--format=csv'])
 
-    expect(markdown).toContain('| revealAt | observedByPtcAt | payloadStatus |')
-    expect(csv).toContain('revealAt,observedByPtcAt,payloadStatus,ptcPresent,ptcAbsent,canonicalHead')
+    expect(markdown).toContain('| revealAt | observedByPtcAt | payloadDisposition | payloadStatus |')
+    expect(csv).toContain('revealAt,observedByPtcAt,payloadDisposition,payloadStatus,ptcPresent,ptcAbsent,canonicalHead')
   })
 })

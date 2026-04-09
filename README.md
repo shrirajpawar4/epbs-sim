@@ -16,9 +16,12 @@ That second question is the whole point of the toy:
 
 That is the extra ePBS phase this simulator is trying to make tangible.
 
+The simulator now also separates the fork-choice result from the failure reason. Multiple bad outcomes can all collapse to `WITHOUT_PAYLOAD`, but they are not the same operationally. The CLI reports a `Payload disposition` so you can distinguish `WITHHELD`, `LATE_BY_OBSERVATION`, `COMMITMENT_MISMATCH`, `EXECUTION_INVALID`, `GOSSIP_REJECTED`, and `PTC_REJECTED`.
+
 ## How to read the output
 
 Each scenario prints a timeline followed by a summary:
+- `Payload disposition` is the first failure or success classification for the payload
 - `Payload status` is the toy model's final verdict for the slot: `FULL` or `EMPTY`
 - `Fork-choice view` separates "payload exists" from "payload was seen in time by the PTC"
 - `PTC votes` show whether the payload was considered present before the cutoff
@@ -38,6 +41,9 @@ In plain English:
 - `hash_mismatch`: builder reveals a payload that does not match the header commitment, so the toy rejects it
 - `early_payload_noisy_ptc`: payload is on time, but not every PTC voter agrees; majority still says present
 - `delayed_network_view`: builder reveals before the cutoff, but the PTC's observed arrival is after the cutoff
+- `execution_invalid`: payload arrives on time but fails a toy execution-validity check
+- `gossip_rejected`: payload arrives but is rejected by a toy local gossip-validation rule
+- `ptc_rejected`: payload is timely and otherwise valid, but the PTC majority still rejects it
 
 ## What it models
 
@@ -55,6 +61,7 @@ In plain English:
 - Execution validity, blobs, data availability, inclusion lists, and payment settlement are out of scope.
 - Builder penalties for withholding are out of scope.
 - Payload validity is simplified to commitment/hash matching rather than full `process_execution_payload` validation.
+- `EXECUTION_INVALID` and `GOSSIP_REJECTED` are simulated client-facing error states, not full consensus-spec processing pipelines.
 - Spec-ish timing uses `3s/6s/9s` based on an earlier draft snapshot. The exact slot-component cutoffs have shifted across revisions, so verify against the `consensus-specs` `dev` branch before treating these numbers as normative.
 - Two modes are supported:
   - `spec-ish`: uses the draft-style `t=3s` CL attestation, `t=6s` aggregates, `t=9s` PTC cutoff

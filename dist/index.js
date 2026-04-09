@@ -53,8 +53,9 @@ function printScenario(result) {
         const suffix = event.data ? ` ${JSON.stringify(event.data)}` : '';
         console.log(`  ${formatTime(event.t).padEnd(8)} [${event.actor.padEnd(11)}] ${event.event}${suffix}`);
     }
-    console.log(`\n  Payload status: ${result.payloadStatus}`);
-    console.log(`  Fork-choice view: arrived=${result.forkChoiceState.payloadArrived}, observedByPtcAt=${result.forkChoiceState.payloadObservedByPtcAt}, timely=${result.forkChoiceState.payloadTimelyByObservation}, hashMatchesCommit=${result.forkChoiceState.payloadHashMatchesCommit}`);
+    console.log(`\n  Payload disposition: ${result.payloadDisposition}`);
+    console.log(`  Payload status: ${result.payloadStatus}`);
+    console.log(`  Fork-choice view: arrived=${result.forkChoiceState.payloadArrived}, observedByPtcAt=${result.forkChoiceState.payloadObservedByPtcAt}, timely=${result.forkChoiceState.payloadTimelyByObservation}, hashMatchesCommit=${result.forkChoiceState.payloadHashMatchesCommit}, executionValid=${result.forkChoiceState.payloadExecutionValid}, gossipAccepted=${result.forkChoiceState.payloadGossipAccepted}`);
     console.log(`  CL attesters: HEAD=${result.clAttestationTally.counts.HEAD}, SKIP=${result.clAttestationTally.counts.SKIP}`);
     console.log(`  PTC votes: PRESENT=${result.ptcTally.counts.PRESENT}, ABSENT=${result.ptcTally.counts.ABSENT}`);
     console.log(`  Canonical head after slot ${result.nextSlotDecision.slot}: ${result.canonicalHead}`);
@@ -66,6 +67,7 @@ function printScenarioMatrix(results) {
         'mode',
         'revealAt',
         'observedByPtcAt',
+        'payloadDisposition',
         'hashMatches',
         'ptcPresent',
         'ptcAbsent',
@@ -77,6 +79,7 @@ function printScenarioMatrix(results) {
         result.mode,
         result.payload?.revealedAt ?? 'withheld',
         result.forkChoiceState.payloadObservedByPtcAt ?? 'none',
+        result.payloadDisposition,
         result.forkChoiceState.payloadHashMatchesCommit,
         result.ptcTally.counts.PRESENT,
         result.ptcTally.counts.ABSENT,
@@ -107,23 +110,24 @@ function sweepRevealTimes(mode) {
     });
 }
 function printSweepMarkdown(points) {
-    console.log('| revealAt | observedByPtcAt | payloadStatus | ptcPresent | ptcAbsent | canonicalHead |');
-    console.log('| --- | --- | --- | --- | --- | --- |');
+    console.log('| revealAt | observedByPtcAt | payloadDisposition | payloadStatus | ptcPresent | ptcAbsent | canonicalHead |');
+    console.log('| --- | --- | --- | --- | --- | --- | --- |');
     for (const point of points) {
-        console.log(`| ${point.revealAt ?? 'withheld'} | ${point.observedByPtcAt ?? 'none'} | ${point.payloadStatus} | ${point.ptcPresent} | ${point.ptcAbsent} | ${point.canonicalHead} |`);
+        console.log(`| ${point.revealAt ?? 'withheld'} | ${point.observedByPtcAt ?? 'none'} | ${point.payloadDisposition} | ${point.payloadStatus} | ${point.ptcPresent} | ${point.ptcAbsent} | ${point.canonicalHead} |`);
     }
 }
 function printSweepCsv(points) {
-    console.log('revealAt,observedByPtcAt,payloadStatus,ptcPresent,ptcAbsent,canonicalHead');
+    console.log('revealAt,observedByPtcAt,payloadDisposition,payloadStatus,ptcPresent,ptcAbsent,canonicalHead');
     for (const point of points) {
-        console.log(`${point.revealAt ?? 'withheld'},${point.observedByPtcAt ?? 'none'},${point.payloadStatus},${point.ptcPresent},${point.ptcAbsent},${point.canonicalHead}`);
+        console.log(`${point.revealAt ?? 'withheld'},${point.observedByPtcAt ?? 'none'},${point.payloadDisposition},${point.payloadStatus},${point.ptcPresent},${point.ptcAbsent},${point.canonicalHead}`);
     }
 }
 function printSweepMatrix(points) {
-    const headers = ['revealAt', 'observedByPtcAt', 'payloadStatus', 'ptcPresent', 'ptcAbsent', 'canonicalHead'];
+    const headers = ['revealAt', 'observedByPtcAt', 'payloadDisposition', 'payloadStatus', 'ptcPresent', 'ptcAbsent', 'canonicalHead'];
     const rows = points.map((point) => [
         point.revealAt ?? 'withheld',
         point.observedByPtcAt ?? 'none',
+        point.payloadDisposition,
         point.payloadStatus,
         point.ptcPresent,
         point.ptcAbsent,

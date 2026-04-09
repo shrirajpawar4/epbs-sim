@@ -48,6 +48,33 @@ export function buildScenarios(mode) {
             payloadObservedByPtcAt: mode === 'didactic' ? 4_100 : 9_100,
             builderValue: 1000000000000000000n,
             mode
+        },
+        {
+            slot: 7,
+            scenario: 'execution_invalid',
+            builderRevealsAt: mode === 'didactic' ? 3_100 : 6_100,
+            payloadObservedByPtcAt: mode === 'didactic' ? 3_100 : 6_100,
+            executionValid: false,
+            builderValue: 1000000000000000000n,
+            mode
+        },
+        {
+            slot: 8,
+            scenario: 'gossip_rejected',
+            builderRevealsAt: mode === 'didactic' ? 3_300 : 6_300,
+            payloadObservedByPtcAt: mode === 'didactic' ? 3_300 : 6_300,
+            gossipAccepted: false,
+            builderValue: 1000000000000000000n,
+            mode
+        },
+        {
+            slot: 9,
+            scenario: 'ptc_rejected',
+            builderRevealsAt: mode === 'didactic' ? 3_100 : 6_100,
+            payloadObservedByPtcAt: mode === 'didactic' ? 3_100 : 6_100,
+            ptcPresentRatio: 0.45,
+            builderValue: 1000000000000000000n,
+            mode
         }
     ];
 }

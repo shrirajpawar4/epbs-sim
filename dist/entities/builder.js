@@ -6,12 +6,14 @@ export function createBuilderBid(value) {
         committed: true
     };
 }
-export function revealPayload(revealedAt, observedByPtcAt, hashMatchesCommit) {
+export function revealPayload(revealedAt, observedByPtcAt, hashMatchesCommit, executionValid, gossipAccepted) {
     return {
         blockHash: hashMatchesCommit ? '0xpayloadhash' : '0xdifferenthash',
         transactions: ['0xtx1', '0xtx2'],
         revealedAt,
         observedByPtcAt,
-        hashMatchesCommit
+        hashMatchesCommit,
+        executionValid,
+        gossipAccepted
     };
 }

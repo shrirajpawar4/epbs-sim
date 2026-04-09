@@ -12,13 +12,17 @@ export function createBuilderBid(value: bigint): BuilderBid {
 export function revealPayload(
   revealedAt: number,
   observedByPtcAt: number,
-  hashMatchesCommit: boolean
+  hashMatchesCommit: boolean,
+  executionValid: boolean,
+  gossipAccepted: boolean
 ): ExecutionPayload {
   return {
     blockHash: hashMatchesCommit ? '0xpayloadhash' : '0xdifferenthash',
     transactions: ['0xtx1', '0xtx2'],
     revealedAt,
     observedByPtcAt,
-    hashMatchesCommit
+    hashMatchesCommit,
+    executionValid,
+    gossipAccepted
   }
 }

@@ -69,9 +69,10 @@ function printScenario(result: SlotResult): void {
     console.log(`  ${formatTime(event.t).padEnd(8)} [${event.actor.padEnd(11)}] ${event.event}${suffix}`)
   }
 
-  console.log(`\n  Payload status: ${result.payloadStatus}`)
+  console.log(`\n  Payload disposition: ${result.payloadDisposition}`)
+  console.log(`  Payload status: ${result.payloadStatus}`)
   console.log(
-    `  Fork-choice view: arrived=${result.forkChoiceState.payloadArrived}, observedByPtcAt=${result.forkChoiceState.payloadObservedByPtcAt}, timely=${result.forkChoiceState.payloadTimelyByObservation}, hashMatchesCommit=${result.forkChoiceState.payloadHashMatchesCommit}`
+    `  Fork-choice view: arrived=${result.forkChoiceState.payloadArrived}, observedByPtcAt=${result.forkChoiceState.payloadObservedByPtcAt}, timely=${result.forkChoiceState.payloadTimelyByObservation}, hashMatchesCommit=${result.forkChoiceState.payloadHashMatchesCommit}, executionValid=${result.forkChoiceState.payloadExecutionValid}, gossipAccepted=${result.forkChoiceState.payloadGossipAccepted}`
   )
   console.log(
     `  CL attesters: HEAD=${result.clAttestationTally.counts.HEAD}, SKIP=${result.clAttestationTally.counts.SKIP}`
@@ -89,6 +90,7 @@ function printScenarioMatrix(results: SlotResult[]): void {
     'mode',
     'revealAt',
     'observedByPtcAt',
+    'payloadDisposition',
     'hashMatches',
     'ptcPresent',
     'ptcAbsent',
@@ -100,6 +102,7 @@ function printScenarioMatrix(results: SlotResult[]): void {
     result.mode,
     result.payload?.revealedAt ?? 'withheld',
     result.forkChoiceState.payloadObservedByPtcAt ?? 'none',
+    result.payloadDisposition,
     result.forkChoiceState.payloadHashMatchesCommit,
     result.ptcTally.counts.PRESENT,
     result.ptcTally.counts.ABSENT,
@@ -129,29 +132,30 @@ function sweepRevealTimes(mode: SimulationMode): SweepPoint[] {
 }
 
 function printSweepMarkdown(points: SweepPoint[]): void {
-  console.log('| revealAt | observedByPtcAt | payloadStatus | ptcPresent | ptcAbsent | canonicalHead |')
-  console.log('| --- | --- | --- | --- | --- | --- |')
+  console.log('| revealAt | observedByPtcAt | payloadDisposition | payloadStatus | ptcPresent | ptcAbsent | canonicalHead |')
+  console.log('| --- | --- | --- | --- | --- | --- | --- |')
   for (const point of points) {
     console.log(
-      `| ${point.revealAt ?? 'withheld'} | ${point.observedByPtcAt ?? 'none'} | ${point.payloadStatus} | ${point.ptcPresent} | ${point.ptcAbsent} | ${point.canonicalHead} |`
+      `| ${point.revealAt ?? 'withheld'} | ${point.observedByPtcAt ?? 'none'} | ${point.payloadDisposition} | ${point.payloadStatus} | ${point.ptcPresent} | ${point.ptcAbsent} | ${point.canonicalHead} |`
     )
   }
 }
 
 function printSweepCsv(points: SweepPoint[]): void {
-  console.log('revealAt,observedByPtcAt,payloadStatus,ptcPresent,ptcAbsent,canonicalHead')
+  console.log('revealAt,observedByPtcAt,payloadDisposition,payloadStatus,ptcPresent,ptcAbsent,canonicalHead')
   for (const point of points) {
     console.log(
-      `${point.revealAt ?? 'withheld'},${point.observedByPtcAt ?? 'none'},${point.payloadStatus},${point.ptcPresent},${point.ptcAbsent},${point.canonicalHead}`
+      `${point.revealAt ?? 'withheld'},${point.observedByPtcAt ?? 'none'},${point.payloadDisposition},${point.payloadStatus},${point.ptcPresent},${point.ptcAbsent},${point.canonicalHead}`
     )
   }
 }
 
 function printSweepMatrix(points: SweepPoint[]): void {
-  const headers = ['revealAt', 'observedByPtcAt', 'payloadStatus', 'ptcPresent', 'ptcAbsent', 'canonicalHead']
+  const headers = ['revealAt', 'observedByPtcAt', 'payloadDisposition', 'payloadStatus', 'ptcPresent', 'ptcAbsent', 'canonicalHead']
   const rows = points.map((point) => [
     point.revealAt ?? 'withheld',
     point.observedByPtcAt ?? 'none',
+    point.payloadDisposition,
     point.payloadStatus,
     point.ptcPresent,
     point.ptcAbsent,
