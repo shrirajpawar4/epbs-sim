@@ -1,86 +1,29 @@
+import { buildEquivocationScenario } from './scenarios/equivocation.ts'
+import { buildHappyPathScenario } from './scenarios/happy-path.ts'
+import { buildLateRevealScenario } from './scenarios/late-reveal.ts'
+import { buildWithholdScenario } from './scenarios/withhold.ts'
 import { runSlot } from './slot.ts'
 import type { ScenarioDefinition, SimulationMode, SlotResult } from './types.ts'
+import type { RpcLogger } from './engine/mock-engine-api.ts'
+
+interface RunScenarioOptions {
+  rpcLogger?: RpcLogger
+}
 
 export function buildScenarios(mode: SimulationMode): ScenarioDefinition[] {
   return [
-    {
-      slot: 1,
-      scenario: 'happy_path',
-      builderRevealsAt: mode === 'didactic' ? 3_000 : 6_000,
-      builderValue: 1_000_000_000_000_000_000n,
-      mode
-    },
-    {
-      slot: 2,
-      scenario: 'builder_withholds',
-      builderRevealsAt: null,
-      builderValue: 1_000_000_000_000_000_000n,
-      mode
-    },
-    {
-      slot: 3,
-      scenario: 'late_payload',
-      builderRevealsAt: mode === 'didactic' ? 4_500 : 9_500,
-      payloadObservedByPtcAt: mode === 'didactic' ? 4_500 : 9_500,
-      builderValue: 1_000_000_000_000_000_000n,
-      ptcPresentRatio: 0.3,
-      mode
-    },
-    {
-      slot: 4,
-      scenario: 'hash_mismatch',
-      builderRevealsAt: mode === 'didactic' ? 3_500 : 6_500,
-      payloadHashMatchesCommit: false,
-      builderValue: 1_000_000_000_000_000_000n,
-      mode
-    },
-    {
-      slot: 5,
-      scenario: 'early_payload_noisy_ptc',
-      builderRevealsAt: mode === 'didactic' ? 3_200 : 6_200,
-      payloadObservedByPtcAt: mode === 'didactic' ? 3_200 : 6_200,
-      builderValue: 1_000_000_000_000_000_000n,
-      ptcPresentRatio: 0.62,
-      mode
-    },
-    {
-      slot: 6,
-      scenario: 'delayed_network_view',
-      builderRevealsAt: mode === 'didactic' ? 3_900 : 8_700,
-      payloadObservedByPtcAt: mode === 'didactic' ? 4_100 : 9_100,
-      builderValue: 1_000_000_000_000_000_000n,
-      mode
-    },
-    {
-      slot: 7,
-      scenario: 'execution_invalid',
-      builderRevealsAt: mode === 'didactic' ? 3_100 : 6_100,
-      payloadObservedByPtcAt: mode === 'didactic' ? 3_100 : 6_100,
-      executionValid: false,
-      builderValue: 1_000_000_000_000_000_000n,
-      mode
-    },
-    {
-      slot: 8,
-      scenario: 'gossip_rejected',
-      builderRevealsAt: mode === 'didactic' ? 3_300 : 6_300,
-      payloadObservedByPtcAt: mode === 'didactic' ? 3_300 : 6_300,
-      gossipAccepted: false,
-      builderValue: 1_000_000_000_000_000_000n,
-      mode
-    },
-    {
-      slot: 9,
-      scenario: 'ptc_rejected',
-      builderRevealsAt: mode === 'didactic' ? 3_100 : 6_100,
-      payloadObservedByPtcAt: mode === 'didactic' ? 3_100 : 6_100,
-      ptcPresentRatio: 0.45,
-      builderValue: 1_000_000_000_000_000_000n,
-      mode
-    }
+    buildHappyPathScenario(mode),
+    buildWithholdScenario(mode),
+    buildLateRevealScenario(mode),
+    buildEquivocationScenario(mode)
   ]
 }
 
-export function runAllScenarios(mode: SimulationMode = 'spec-ish'): SlotResult[] {
-  return buildScenarios(mode).map(runSlot)
+export async function runAllScenarios(
+  mode: SimulationMode = 'spec-ish',
+  options: RunScenarioOptions = {}
+): Promise<SlotResult[]> {
+  const results: SlotResult[] = []
+  for (const scenario of buildScenarios(mode)) results.push(await runSlot(scenario, options))
+  return results
 }

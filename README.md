@@ -1,79 +1,76 @@
 # ePBS Simulator
 
-This is a toy TypeScript simulator for enshrined proposer-builder separation under [EIP-7732](https://eips.ethereum.org/EIPS/eip-7732). It is meant for learning, explanation, and quick design feedback, not as a consensus-spec implementation. The core point it tries to make tangible is that ePBS introduces an extra decision phase beyond MEV-Boost: the chain first accepts a proposer header that commits to a builder bid, and then separately decides whether the execution payload arrived in time, which determines whether the next slot extends the `FULL` or `EMPTY` version of that block.
+This repo is a small TypeScript simulator for a specific ePBS coordination problem: the proposer and builder are no longer acting inside one clean local flow, and the timing across the Engine API boundary matters for fork choice.
 
-If you show this to core Ethereum people, present it that way: deterministic teaching simulator, simplified majority-rule fork choice, and a tool for checking intuition about timing, withholding, delayed observation, and `FULL` vs `EMPTY` outcomes.
+The simulator is meant for explanation, experimentation, and quick iteration. It is not a full Ethereum client or a spec-accurate consensus implementation. The goal is to make the coordination path easy to inspect:
 
-## what this simulator is showing
+- the proposer asks the execution layer to start building a payload
+- the builder fetches that payload through the Engine API
+- the payload may be revealed on time, revealed late, withheld, or equivocated
+- the PTC decides whether the payload counts as present in time
+- the next slot extends either the full block or the empty version
 
-Think of the proposer as saying, "I picked this builder's block," before everyone has seen the actual payload.
+## What changed
 
-Then the chain asks a second question: "Did the payload show up in time, and does it match what was promised?"
+Earlier, the simulator mostly constructed payload outcomes directly inside the slot model.
 
-That second question is the whole point of the toy:
-- if the payload arrives in time and matches the commitment, the next slot extends `WITH_PAYLOAD`
-- if the payload is missing, late, or mismatched, the next slot extends `WITHOUT_PAYLOAD`
+Now, the simulator includes a mock Execution Layer behind a real localhost JSON-RPC Engine API boundary. That means the main actors go through explicit Engine calls:
 
-That is the extra ePBS phase this simulator is trying to make tangible.
+- proposer calls `engine_forkchoiceUpdatedV3`
+- builder calls `engine_getPayloadV3`
+- validator-side ingest may call `engine_newPayloadV3`
+- PTC and fork choice react to what was observed
 
-The simulator now also separates the fork-choice result from the failure reason. Multiple bad outcomes can all collapse to `WITHOUT_PAYLOAD`, but they are not the same operationally. The CLI reports a `Payload disposition` so you can distinguish `WITHHELD`, `LATE_BY_OBSERVATION`, `COMMITMENT_MISMATCH`, `EXECUTION_INVALID`, `GOSSIP_REJECTED`, and `PTC_REJECTED`.
+That change is the point of the refactor. Timing is no longer attached to a payload after it already exists in memory. Instead, the timing comes from when the proposer, builder, and validator actually cross the Engine boundary.
 
-## How to read the output
+## Main modules
 
-Each scenario prints a timeline followed by a summary:
-- `Payload disposition` is the first failure or success classification for the payload
-- `Payload status` is the toy model's final verdict for the slot: `FULL` or `EMPTY`
-- `Fork-choice view` separates "payload exists" from "payload was seen in time by the PTC"
-- `PTC votes` show whether the payload was considered present before the cutoff
-- `Canonical head after slot N+1` shows what the next slot builds on
+- `src/engine/mock-engine-api.ts`: mock Engine API server
+- `src/engine/payload-store.ts`: in-memory registry of payload builds
+- `src/epbs/proposer.ts`: proposer-side Engine interaction
+- `src/epbs/builder.ts`: builder-side payload fetch and envelope creation
+- `src/epbs/ptc.ts`: PTC voting and payload classification
+- `src/slot.ts`: end-to-end scenario runner
 
-In plain English:
-- proposer commits first
-- builder reveals later
-- PTC decides whether the reveal counts as on time
-- the next slot extends either the full block or the empty/header-only version
+The simulator is still single-process for convenience, but the Engine boundary is real HTTP JSON-RPC on an ephemeral localhost port.
 
-## How to read the scenarios
+## Scenarios
 
-- `happy_path`: builder reveals in time, PTC says `PRESENT`, next slot extends `WITH_PAYLOAD`
-- `builder_withholds`: builder never reveals, PTC says `ABSENT`, next slot extends `WITHOUT_PAYLOAD`
-- `late_payload`: builder reveals after the cutoff, so the payload exists but is too late to count
-- `hash_mismatch`: builder reveals a payload that does not match the header commitment, so the toy rejects it
-- `early_payload_noisy_ptc`: payload is on time, but not every PTC voter agrees; majority still says present
-- `delayed_network_view`: builder reveals before the cutoff, but the PTC's observed arrival is after the cutoff
-- `execution_invalid`: payload arrives on time but fails a toy execution-validity check
-- `gossip_rejected`: payload arrives but is rejected by a toy local gossip-validation rule
-- `ptc_rejected`: payload is timely and otherwise valid, but the PTC majority still rejects it
+The default scenarios are:
 
-## What it models
+- `happy-path`: the builder fetches and reveals in time, validator-side ingest calls `engine_newPayloadV3`, the PTC votes `PRESENT`, and the next slot extends `WITH_PAYLOAD`
+- `withhold`: the builder fetches the payload but never reveals an envelope, validator-side ingest never calls `engine_newPayloadV3`, the PTC votes `ABSENT`, and the next slot extends `WITHOUT_PAYLOAD`
+- `late-reveal`: the builder delays the actual `engine_getPayloadV3` call until after the cutoff; the payload can still be `VALID` at `engine_newPayloadV3`, but it is too late for the PTC, so the next slot extends `WITHOUT_PAYLOAD`
+- `equivocation`: the builder sends one payload envelope and then a conflicting second envelope for the same build; the second arrival marks the build `EQUIVOCATED`, validator-side ingest skips `engine_newPayloadV3`, the PTC votes `ABSENT`, and fork choice extends `WITHOUT_PAYLOAD`
 
-- `happy_path`: payload is revealed on time, PTC votes `PRESENT`, next slot extends `FULL`
-- `builder_withholds`: proposer commits to the bid but builder never reveals, PTC votes `ABSENT`, next slot extends `EMPTY`
-- `late_payload`: payload arrives after the cutoff, a minority PTC split does not prevent `EMPTY`
-- `hash_mismatch`: payload arrives but does not match the committed hash, so the toy treats it as absent for fork-choice purposes
-- `early_payload_noisy_ptc`: payload arrives on time but PTC support is noisy rather than unanimous
-- `delayed_network_view`: payload is revealed before the cutoff, but the PTC’s observed arrival is after the cutoff
+## Sweep mode
 
-## Simplifications
+`--sweep` now varies the time when the builder actually calls `engine_getPayloadV3`.
 
-- This does not implement real validator duties, proposer boost, or exact LMD-GHOST math.
-- Committee behavior is deterministic and configured as simple vote ratios.
-- Execution validity, blobs, data availability, inclusion lists, and payment settlement are out of scope.
-- Builder penalties for withholding are out of scope.
-- Payload validity is simplified to commitment/hash matching rather than full `process_execution_payload` validation.
-- `EXECUTION_INVALID` and `GOSSIP_REJECTED` are simulated client-facing error states, not full consensus-spec processing pipelines.
-- Spec-ish timing uses `3s/6s/9s` based on an earlier draft snapshot. The exact slot-component cutoffs have shifted across revisions, so verify against the `consensus-specs` `dev` branch before treating these numbers as normative.
-- Two modes are supported:
-  - `spec-ish`: uses the draft-style `t=3s` CL attestation, `t=6s` aggregates, `t=9s` PTC cutoff
-  - `didactic`: uses a simplified teaching timeline closer to `0/3/4/6/8`
+That matters because the sweep is no longer based on injected reveal timestamps. It is exercising the Engine-backed path directly, so the observed timing comes from the real fetch and reveal sequence.
 
-## Client / gossip relevance
+In practice:
 
-This simulator is also relevant to client gossip handling. EIP-7732 separates beacon-block and execution-payload dissemination, and the toy models the timing constraint that gossip validation and payload-attestation handling must enforce when deciding whether a payload counts as present in time for fork choice.
+- early builder fetch times tend to produce `TIMELY_VALID`
+- fetches at or after the cutoff produce `LATE_BY_OBSERVATION`
+- no fetch produces `WITHHELD`
 
-## Local setup
+## Reading the output
+
+Each scenario prints a timeline followed by a short summary.
+
+The most useful fields are:
+
+- `Payload disposition`: the main classification for what happened, such as `TIMELY_VALID`, `WITHHELD`, `LATE_BY_OBSERVATION`, or `EQUIVOCATED`
+- `Payload status`: the simplified fork-choice outcome, `FULL` or `EMPTY`
+- `newPayloadStatus`: the result from `engine_newPayloadV3` when that call is made
+- `PTC votes`: the `PRESENT` vs `ABSENT` tally
+- `Canonical head after slot N+1`: what the next slot builds on
+
+## Setup
 
 Requirements:
+
 - Node.js 22 or newer
 - npm
 
@@ -83,82 +80,83 @@ Install dependencies:
 npm install
 ```
 
+## Running the simulator
+
 Run the default scenario timelines:
 
 ```bash
 npm run dev
 ```
 
-Run the didactic timeline:
+Run the didactic timing mode:
 
 ```bash
 npm run dev -- --mode=didactic
 ```
 
-Print a compact scenario matrix instead of full timelines:
+Print a compact matrix instead of full timelines:
 
 ```bash
 npm run dev -- --format=matrix
 ```
 
-Sweep reveal times across the slot:
+Run the builder-fetch sweep:
 
 ```bash
 npm run sweep
 ```
 
-Export the sweep as Markdown:
+Export sweep output as Markdown:
 
 ```bash
 npm run sweep:markdown
 ```
 
-Export the sweep as CSV:
+Export sweep output as CSV:
 
 ```bash
 npm run sweep:csv
 ```
 
-Type-check the project:
+## Testing
+
+Type-check the code:
 
 ```bash
 npm run typecheck
 ```
 
-Build the compiled CLI output:
+Build the CLI:
 
 ```bash
 npm run build
 ```
 
-Run the test suite:
+Run the full test suite:
 
 ```bash
 npm test
 ```
 
-## How to test it locally
+The tests cover:
 
-For quick confidence:
-- Run `npm run typecheck`
-- Run `npm run build`
-- Run `npm test`
-- Run `npm run dev`
-- Run `npm run sweep`
+- Engine API request and response flow
+- payload-store behavior
+- the four main scenarios
+- sweep behavior around the cutoff
+- CLI output
 
-For boundary testing:
-- Inspect the reveal-time flip at `8999`, `9000`, and `9001` in `spec-ish` mode
-- Run `npm run sweep:markdown` and look for the point where `canonicalHead` changes from `WITH_PAYLOAD` to `WITHOUT_PAYLOAD`
+## Note on localhost binding
 
-## What the sweep means
+The mock Engine API opens a localhost port. In a normal local environment, `npm run dev` and `npm test` should work directly. In a restricted sandbox, those commands may fail if the process is not allowed to bind a port.
 
-The sweep runs the same slot model many times with different reveal times.
+## Simplifications
 
-It is useful because it shows the exact point where the result flips:
-- up to `8999ms`, the toy says `WITH_PAYLOAD`
-- at `9000ms` and later, the toy says `WITHOUT_PAYLOAD`
-
-That flip point is the timing constraint made visible as a table.
+- this is not a full consensus or execution client
+- Engine payloads use minimal toy data rather than full spec objects
+- blobs data is deterministic mock data used to keep the `getPayloadV3` flow realistic
+- committee behavior is deterministic and ratio-based
+- the simulator uses one canonical observer view rather than multiple competing network views
 
 ## References
 

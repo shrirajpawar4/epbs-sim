@@ -1,7 +1,9 @@
-import { buildClAttestationVotes, DEFAULT_CL_ATTESTER_SIZE, tallyClAttestationVotes } from "./entities/attesters.js";
-import { createBuilderBid, revealPayload } from "./entities/builder.js";
-import { buildPtcVotes, DEFAULT_PTC_SIZE, tallyPtcVotes } from "./entities/ptc.js";
-import { createSignedHeader } from "./entities/proposer.js";
+import { buildClAttestationVotes, DEFAULT_CL_ATTESTER_SIZE, tallyClAttestationVotes } from "./epbs/attesters.js";
+import { createEquivocationEnvelope, fetchPayloadEnvelope, withBroadcastDelay } from "./epbs/builder.js";
+import { buildPtcVotes, canonicalHeadFromStatus, classifyPayloadDisposition, DEFAULT_PTC_SIZE, defaultPtcPresentRatio, payloadStatusFromPtcOutcome, tallyPtcVotes } from "./epbs/ptc.js";
+import { proposeHeader } from "./epbs/proposer.js";
+import { callEngineRpc, MockEngineApiServer } from "./engine/mock-engine-api.js";
+import { PayloadStore } from "./engine/payload-store.js";
 export const SLOT_MS = 12_000;
 export const SPECISH_TIMING = {
     slotMs: SLOT_MS,
@@ -18,77 +20,33 @@ export const DIDACTIC_TIMING = {
 export function getTiming(mode) {
     return mode === 'didactic' ? DIDACTIC_TIMING : SPECISH_TIMING;
 }
-function payloadStatusFromPtcOutcome(ptcPresentMajority) {
-    return ptcPresentMajority ? 'FULL' : 'EMPTY';
-}
-function canonicalHeadFromStatus(payloadStatus) {
-    return payloadStatus === 'FULL' ? 'WITH_PAYLOAD' : 'WITHOUT_PAYLOAD';
-}
-function classifyPayloadDisposition(payload, timing, ptcPresentMajority) {
-    if (payload === null)
-        return 'WITHHELD';
-    if (!payload.gossipAccepted)
-        return 'GOSSIP_REJECTED';
-    if (!payload.hashMatchesCommit)
-        return 'COMMITMENT_MISMATCH';
-    if (!payload.executionValid)
-        return 'EXECUTION_INVALID';
-    if (payload.observedByPtcAt >= timing.ptcCutoffMs)
-        return 'LATE_BY_OBSERVATION';
-    if (!ptcPresentMajority)
-        return 'PTC_REJECTED';
-    return 'TIMELY_VALID';
-}
-function defaultPtcPresentRatio(payload, timing) {
-    if (payload === null)
-        return 0;
-    if (!payload.gossipAccepted)
-        return 0;
-    if (!payload.hashMatchesCommit)
-        return 0;
-    if (!payload.executionValid)
-        return 0;
-    return payload.observedByPtcAt < timing.ptcCutoffMs ? 1 : 0;
-}
 function defaultClHeadVoteRatio() {
     return 1;
 }
-function resolvePayload(config, timing) {
-    if (config.builderRevealsAt === null)
-        return null;
-    const observedByPtcAt = config.payloadObservedByPtcAt === null
-        ? timing.ptcCutoffMs + 1
-        : (config.payloadObservedByPtcAt ?? config.builderRevealsAt);
-    return revealPayload(config.builderRevealsAt, observedByPtcAt, config.payloadHashMatchesCommit ?? true, config.executionValid ?? true, config.gossipAccepted ?? true);
-}
-function buildForkChoiceState(payload, timing, payloadDisposition, payloadStatus, canonicalHead) {
+function buildForkChoiceState(payloadId, payload, build, observedByPtcAt, newPayloadStatus, payloadDisposition, canonicalHead, timing) {
     return {
         slotNHeaderAccepted: true,
+        payloadId,
+        buildState: build.state,
         payloadArrived: payload !== null,
-        payloadObservedByPtcAt: payload?.observedByPtcAt ?? null,
-        payloadTimelyByObservation: payload !== null && payload.observedByPtcAt < timing.ptcCutoffMs,
-        payloadHashMatchesCommit: payload?.hashMatchesCommit ?? false,
-        payloadExecutionValid: payload?.executionValid ?? false,
-        payloadGossipAccepted: payload?.gossipAccepted ?? false,
+        payloadObservedByPtcAt: observedByPtcAt,
+        payloadTimelyByObservation: observedByPtcAt !== null && observedByPtcAt < timing.ptcCutoffMs,
+        newPayloadStatus,
         payloadDisposition,
-        payloadStatus,
         canonicalHead,
         nextSlotExtends: canonicalHead
     };
 }
-function logPayloadValidationEvent(payload, timing, payloadDisposition, log) {
-    const eventTime = payload?.revealedAt ?? timing.aggregateMs;
-    if (payloadDisposition === 'TIMELY_VALID') {
-        log(eventTime, 'validator', 'PAYLOAD_VALIDATION', 'Payload passes toy validation checks', {
-            disposition: payloadDisposition
-        });
-        return;
-    }
-    log(eventTime, 'validator', 'PAYLOAD_VALIDATION', 'Payload fails toy validation or timeliness checks', {
-        disposition: payloadDisposition
-    });
+async function validateEnvelope(engineUrl, envelope, atMs, rpcLogger) {
+    const result = await callEngineRpc(engineUrl, 'engine_newPayloadV3', [
+        {
+            executionPayload: envelope.executionPayload,
+            blobsBundle: envelope.blobsBundle
+        }
+    ], atMs, { logger: rpcLogger });
+    return result.status;
 }
-export function runSlot(config) {
+export async function runSlot(config, options = {}) {
     const mode = config.mode ?? 'spec-ish';
     const timing = getTiming(mode);
     const ptcSize = config.ptcSize ?? DEFAULT_PTC_SIZE;
@@ -97,102 +55,184 @@ export function runSlot(config) {
     const log = (t, actor, phase, event, data) => {
         timeline.push({ t, actor, phase, event, data });
     };
-    const bid = createBuilderBid(config.builderValue);
-    const header = createSignedHeader(config.slot, bid);
-    log(0, 'proposer', 'HEADER_PROPOSED', 'Signed beacon block header broadcast', {
-        bidValueWei: header.bid.value.toString(),
-        payloadHash: header.bid.payloadHash,
-        mode
-    });
-    const clHeadVoteRatio = config.clHeadVoteRatio ?? defaultClHeadVoteRatio();
-    const clAttestationVotes = buildClAttestationVotes(clAttesterSize, clHeadVoteRatio);
-    const clAttestationTally = tallyClAttestationVotes(clAttestationVotes);
-    log(timing.clAttestationMs, 'attesters', 'CL_ATTESTATION', 'CL attesters vote on the beacon header path', {
-        head: clAttestationTally.counts.HEAD,
-        skip: clAttestationTally.counts.SKIP,
-        committeeSize: clAttesterSize
-    });
-    const payload = resolvePayload(config, timing);
-    if (payload !== null) {
-        log(payload.revealedAt, 'builder', 'PAYLOAD_REVEALED', 'Builder reveals full execution payload', {
-            blockHash: payload.blockHash,
-            observedByPtcAt: payload.observedByPtcAt,
-            hashMatchesCommit: payload.hashMatchesCommit,
-            executionValid: payload.executionValid,
-            gossipAccepted: payload.gossipAccepted
+    const store = new PayloadStore();
+    const engine = new MockEngineApiServer(store);
+    await engine.start();
+    try {
+        const { header, payloadId } = await proposeHeader(engine.url, config, 0, options.rpcLogger);
+        log(0, 'proposer', 'ENGINE_FORKCHOICE_UPDATED', 'Proposer calls engine_forkchoiceUpdatedV3', {
+            payloadId,
+            slot: config.slot
         });
-    }
-    else {
-        log(timing.aggregateMs, 'builder', 'PAYLOAD_REVEALED', 'Builder withholds payload beyond reveal window');
-    }
-    log(timing.aggregateMs, 'network', 'ATTESTATION_AGGREGATES', 'CL aggregates for slot N are broadcast', {
-        slot: config.slot
-    });
-    const ptcPresentRatio = config.ptcPresentRatio ?? defaultPtcPresentRatio(payload, timing);
-    const ptcVotes = buildPtcVotes(ptcSize, ptcPresentRatio);
-    const ptcTally = tallyPtcVotes(ptcVotes);
-    const ptcPresentMajority = ptcTally.counts.PRESENT > ptcSize / 2;
-    const payloadDisposition = classifyPayloadDisposition(payload, timing, ptcPresentMajority);
-    const payloadStatus = payloadStatusFromPtcOutcome(ptcPresentMajority);
-    logPayloadValidationEvent(payload, timing, payloadDisposition, log);
-    log(timing.ptcCutoffMs, 'ptc', 'PTC_VOTE', 'PTC votes on payload timeliness', {
-        present: ptcTally.counts.PRESENT,
-        absent: ptcTally.counts.ABSENT,
-        committeeSize: ptcSize,
-        observedPayloadAt: payload?.observedByPtcAt ?? null,
-        payloadDisposition,
-        payloadStatus
-    });
-    const canonicalHead = canonicalHeadFromStatus(payloadStatus);
-    const nextSlotDecision = {
-        slot: config.slot + 1,
-        extends: canonicalHead,
-        reason: canonicalHead === 'WITH_PAYLOAD'
-            ? 'PTC majority marked payload timely, so slot N+1 extends FULL'
-            : `Payload disposition ${payloadDisposition} collapses to EMPTY, so slot N+1 extends EMPTY`
-    };
-    const forkChoiceState = buildForkChoiceState(payload, timing, payloadDisposition, payloadStatus, canonicalHead);
-    log(timing.slotMs, 'fork-choice', 'NEXT_SLOT_FORK_CHOICE', 'Slot N+1 proposer extends the canonical branch', nextSlotDecision);
-    log(timing.slotMs, 'slot', 'COMPLETE', 'Slot simulation complete', {
-        canonicalHead,
-        payloadDisposition
-    });
-    timeline.sort((left, right) => left.t - right.t);
-    return {
-        slot: config.slot,
-        scenario: config.scenario,
-        mode,
-        timing,
-        header,
-        payload,
-        payloadDisposition,
-        payloadStatus,
-        clAttestationVotes,
-        clAttestationTally,
-        ptcVotes,
-        ptcTally,
-        canonicalHead,
-        forkChoiceState,
-        nextSlotDecision,
-        timeline
-    };
-}
-export function runRevealSweep(revealTimes, baseConfig) {
-    return revealTimes.map((revealAt, index) => {
-        const result = runSlot({
-            slot: 1_000 + index,
-            scenario: revealAt === null ? 'sweep_withheld' : `sweep_${revealAt}`,
-            builderRevealsAt: revealAt,
-            ...baseConfig
+        log(0, 'proposer', 'HEADER_PROPOSED', 'Signed beacon block header broadcast', {
+            bidValueWei: header.bid.value.toString(),
+            payloadHash: header.bid.payloadHash,
+            payloadId,
+            mode
         });
+        const clHeadVoteRatio = config.clHeadVoteRatio ?? defaultClHeadVoteRatio();
+        const clAttestationVotes = buildClAttestationVotes(clAttesterSize, clHeadVoteRatio);
+        const clAttestationTally = tallyClAttestationVotes(clAttestationVotes);
+        log(timing.clAttestationMs, 'attesters', 'CL_ATTESTATION', 'CL attesters vote on the header path', {
+            head: clAttestationTally.counts.HEAD,
+            skip: clAttestationTally.counts.SKIP,
+            committeeSize: clAttesterSize
+        });
+        log(timing.aggregateMs, 'network', 'ATTESTATION_AGGREGATES', 'CL aggregates for slot N are broadcast', {
+            slot: config.slot
+        });
+        const payloads = [];
+        let payload = null;
+        let observedByPtcAt = null;
+        let newPayloadStatus = null;
+        let newPayloadAttempted = false;
+        if (config.builderFetchAtMs !== null) {
+            const builderId = config.builderId ?? 'builder-0';
+            const fetchedEnvelope = await fetchPayloadEnvelope(engine.url, payloadId, builderId, config.builderFetchAtMs, options.rpcLogger);
+            log(config.builderFetchAtMs, 'builder', 'ENGINE_GET_PAYLOAD', 'Builder calls engine_getPayloadV3', {
+                payloadId,
+                blockHash: fetchedEnvelope.executionPayload.blockHash
+            });
+            if (config.builderAction === 'withhold') {
+                store.markWithheld(payloadId);
+                log(config.builderFetchAtMs, 'builder', 'PAYLOAD_REVEALED', 'Builder withholds envelope after engine_getPayloadV3', {
+                    payloadId,
+                    blockHash: fetchedEnvelope.executionPayload.blockHash
+                });
+            }
+            else if (config.builderAction === 'equivocate') {
+                const firstEnvelope = withBroadcastDelay(fetchedEnvelope, fetchedEnvelope.broadcastAtMs + (config.broadcastDelayMs ?? 0));
+                const secondEnvelope = createEquivocationEnvelope(firstEnvelope, firstEnvelope.broadcastAtMs + (config.equivocationGapMs ?? 100));
+                store.recordEnvelope(payloadId, firstEnvelope);
+                payloads.push(firstEnvelope);
+                payload = firstEnvelope;
+                log(firstEnvelope.broadcastAtMs, 'builder', 'PAYLOAD_REVEALED', 'Builder broadcasts first payload envelope', {
+                    payloadId,
+                    blockHash: firstEnvelope.executionPayload.blockHash,
+                    variant: firstEnvelope.variant
+                });
+                const updatedBuild = store.recordEnvelope(payloadId, secondEnvelope);
+                payloads.push(secondEnvelope);
+                observedByPtcAt = secondEnvelope.broadcastAtMs + (config.networkDelayMs ?? 0);
+                log(secondEnvelope.broadcastAtMs, 'builder', 'PAYLOAD_REVEALED', 'Builder broadcasts conflicting payload envelope', {
+                    payloadId,
+                    blockHash: secondEnvelope.executionPayload.blockHash,
+                    variant: secondEnvelope.variant
+                });
+                log(secondEnvelope.broadcastAtMs, 'validator', 'PAYLOAD_VALIDATION', 'Validator suppresses engine_newPayloadV3 after equivocation', {
+                    payloadId,
+                    buildState: updatedBuild.state
+                });
+            }
+            else {
+                const broadcastEnvelope = withBroadcastDelay(fetchedEnvelope, fetchedEnvelope.broadcastAtMs + (config.broadcastDelayMs ?? 0));
+                store.recordEnvelope(payloadId, broadcastEnvelope);
+                payloads.push(broadcastEnvelope);
+                payload = broadcastEnvelope;
+                observedByPtcAt = broadcastEnvelope.broadcastAtMs + (config.networkDelayMs ?? 0);
+                log(broadcastEnvelope.broadcastAtMs, 'builder', 'PAYLOAD_REVEALED', 'Builder broadcasts execution payload envelope', {
+                    payloadId,
+                    blockHash: broadcastEnvelope.executionPayload.blockHash,
+                    observedByPtcAt
+                });
+                if (config.validatorCallsNewPayload ?? true) {
+                    newPayloadAttempted = true;
+                    newPayloadStatus = await validateEnvelope(engine.url, broadcastEnvelope, observedByPtcAt, options.rpcLogger);
+                    log(observedByPtcAt, 'validator', 'PAYLOAD_VALIDATION', 'Validator calls engine_newPayloadV3', {
+                        payloadId,
+                        status: newPayloadStatus
+                    });
+                }
+            }
+        }
+        else {
+            store.markWithheld(payloadId);
+            log(timing.aggregateMs, 'builder', 'PAYLOAD_REVEALED', 'Builder never calls engine_getPayloadV3', {
+                payloadId
+            });
+        }
+        const build = store.snapshotByPayloadId(payloadId);
+        if (!build)
+            throw new Error(`missing build snapshot for payloadId ${payloadId}`);
+        const ptcPresentRatio = config.ptcPresentRatio ??
+            defaultPtcPresentRatio(payload, build.state, observedByPtcAt, newPayloadStatus, timing);
+        const ptcVotes = buildPtcVotes(ptcSize, ptcPresentRatio);
+        const ptcTally = tallyPtcVotes(ptcVotes);
+        const ptcPresentMajority = ptcTally.counts.PRESENT > ptcSize / 2;
+        const payloadDisposition = classifyPayloadDisposition(payload, build.state, observedByPtcAt, newPayloadStatus, timing, ptcPresentMajority);
+        const payloadStatus = payloadStatusFromPtcOutcome(ptcPresentMajority);
+        const canonicalHead = canonicalHeadFromStatus(payloadStatus);
+        log(timing.ptcCutoffMs, 'ptc', 'PTC_VOTE', 'PTC votes on payload presence across the Engine boundary', {
+            present: ptcTally.counts.PRESENT,
+            absent: ptcTally.counts.ABSENT,
+            committeeSize: ptcSize,
+            observedPayloadAt: observedByPtcAt,
+            payloadDisposition,
+            newPayloadStatus
+        });
+        const nextSlotDecision = {
+            slot: config.slot + 1,
+            extends: canonicalHead,
+            reason: canonicalHead === 'WITH_PAYLOAD'
+                ? 'Payload stayed timely and valid across the Engine boundary, so slot N+1 extends FULL'
+                : `Payload disposition ${payloadDisposition} collapses to EMPTY, so slot N+1 extends EMPTY`
+        };
+        const forkChoiceState = buildForkChoiceState(payloadId, payload, build, observedByPtcAt, newPayloadStatus, payloadDisposition, canonicalHead, timing);
+        log(timing.slotMs, 'fork-choice', 'NEXT_SLOT_FORK_CHOICE', 'Slot N+1 proposer extends the canonical branch', nextSlotDecision);
+        log(timing.slotMs, 'slot', 'COMPLETE', 'Slot simulation complete', {
+            canonicalHead,
+            payloadDisposition,
+            buildState: build.state
+        });
+        timeline.sort((left, right) => left.t - right.t);
         return {
-            revealAt,
-            observedByPtcAt: result.payload?.observedByPtcAt ?? null,
+            slot: config.slot,
+            scenario: config.scenario,
+            mode,
+            engineUrl: engine.url,
+            timing,
+            header,
+            payloadId,
+            payload,
+            payloads,
+            payloadDisposition,
+            payloadStatus,
+            newPayloadStatus,
+            newPayloadAttempted,
+            clAttestationVotes,
+            clAttestationTally,
+            ptcVotes,
+            ptcTally,
+            canonicalHead,
+            buildState: build.state,
+            forkChoiceState,
+            nextSlotDecision,
+            timeline
+        };
+    }
+    finally {
+        await engine.stop();
+    }
+}
+export async function runBuilderFetchSweep(builderFetchTimes, baseConfig, options = {}) {
+    const points = [];
+    for (const [index, builderFetchAtMs] of builderFetchTimes.entries()) {
+        const result = await runSlot({
+            slot: 1_000 + index,
+            scenario: builderFetchAtMs === null ? 'sweep_withhold' : `sweep_${builderFetchAtMs}`,
+            builderFetchAtMs,
+            ...baseConfig
+        }, options);
+        points.push({
+            builderFetchAtMs,
+            observedByPtcAt: result.forkChoiceState.payloadObservedByPtcAt,
+            newPayloadStatus: result.newPayloadStatus,
             payloadDisposition: result.payloadDisposition,
             payloadStatus: result.payloadStatus,
             ptcPresent: result.ptcTally.counts.PRESENT,
             ptcAbsent: result.ptcTally.counts.ABSENT,
             canonicalHead: result.canonicalHead
-        };
-    });
+        });
+    }
+    return points;
 }

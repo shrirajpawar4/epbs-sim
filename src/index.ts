@@ -1,5 +1,5 @@
 import { runAllScenarios } from './scenarios.ts'
-import { DIDACTIC_TIMING, runRevealSweep, SPECISH_TIMING } from './slot.ts'
+import { DIDACTIC_TIMING, runBuilderFetchSweep, SPECISH_TIMING } from './slot.ts'
 import type { SimulationMode, SlotResult, SweepPoint } from './types.ts'
 
 type OutputFormat = 'timeline' | 'matrix' | 'markdown' | 'csv'
@@ -8,6 +8,7 @@ interface CliOptions {
   mode: SimulationMode
   format: OutputFormat
   scenarioSet: 'scenarios' | 'sweep'
+  debugRpc: boolean
 }
 
 function padCell(value: string | number | boolean, width: number): string {
@@ -32,7 +33,8 @@ function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     mode: 'spec-ish',
     format: 'timeline',
-    scenarioSet: 'scenarios'
+    scenarioSet: 'scenarios',
+    debugRpc: false
   }
 
   for (const arg of argv) {
@@ -49,6 +51,7 @@ function parseArgs(argv: string[]): CliOptions {
       }
     }
     if (arg === '--sweep') options.scenarioSet = 'sweep'
+    if (arg === '--debug-rpc') options.debugRpc = true
   }
 
   return options
@@ -62,17 +65,19 @@ function printScenario(result: SlotResult): void {
   console.log(`\n${'='.repeat(72)}`)
   console.log(`SLOT ${result.slot}  ${result.scenario.toUpperCase()}  [${result.mode}]`)
   console.log('='.repeat(72))
-  console.log('MEV-Boost contrast: classic PBS has one decisive reveal path; ePBS adds an explicit payload-timeliness verdict before the next slot extends FULL vs EMPTY.')
+  console.log('Engine boundary: proposer triggers a build with FCU, builder fetches with getPayload, validator ingests with newPayload when the scenario allows it.')
+  console.log(`Mock Engine API: ${result.engineUrl}`)
 
   for (const event of result.timeline) {
     const suffix = event.data ? ` ${JSON.stringify(event.data)}` : ''
     console.log(`  ${formatTime(event.t).padEnd(8)} [${event.actor.padEnd(11)}] ${event.event}${suffix}`)
   }
 
-  console.log(`\n  Payload disposition: ${result.payloadDisposition}`)
+  console.log(`\n  Payload ID: ${result.payloadId}`)
+  console.log(`  Payload disposition: ${result.payloadDisposition}`)
   console.log(`  Payload status: ${result.payloadStatus}`)
   console.log(
-    `  Fork-choice view: arrived=${result.forkChoiceState.payloadArrived}, observedByPtcAt=${result.forkChoiceState.payloadObservedByPtcAt}, timely=${result.forkChoiceState.payloadTimelyByObservation}, hashMatchesCommit=${result.forkChoiceState.payloadHashMatchesCommit}, executionValid=${result.forkChoiceState.payloadExecutionValid}, gossipAccepted=${result.forkChoiceState.payloadGossipAccepted}`
+    `  Fork-choice view: arrived=${result.forkChoiceState.payloadArrived}, observedByPtcAt=${result.forkChoiceState.payloadObservedByPtcAt}, timely=${result.forkChoiceState.payloadTimelyByObservation}, buildState=${result.forkChoiceState.buildState}, newPayloadStatus=${result.forkChoiceState.newPayloadStatus}`
   )
   console.log(
     `  CL attesters: HEAD=${result.clAttestationTally.counts.HEAD}, SKIP=${result.clAttestationTally.counts.SKIP}`
@@ -88,73 +93,84 @@ function printScenarioMatrix(results: SlotResult[]): void {
   const headers = [
     'scenario',
     'mode',
-    'revealAt',
+    'payloadId',
+    'builderFetchAt',
     'observedByPtcAt',
+    'newPayloadStatus',
     'payloadDisposition',
-    'hashMatches',
-    'ptcPresent',
-    'ptcAbsent',
-    'payloadStatus',
     'canonicalHead'
   ]
   const rows = results.map((result) => [
     result.scenario,
     result.mode,
-    result.payload?.revealedAt ?? 'withheld',
+    result.payloadId,
+    result.payload?.broadcastAtMs ?? 'withheld',
     result.forkChoiceState.payloadObservedByPtcAt ?? 'none',
+    result.newPayloadStatus ?? 'none',
     result.payloadDisposition,
-    result.forkChoiceState.payloadHashMatchesCommit,
-    result.ptcTally.counts.PRESENT,
-    result.ptcTally.counts.ABSENT,
-    result.payloadStatus,
     result.canonicalHead
   ])
   printFixedWidthTable(headers, rows)
 }
 
-function sweepRevealTimes(mode: SimulationMode): SweepPoint[] {
+async function sweepBuilderFetchTimes(mode: SimulationMode): Promise<SweepPoint[]> {
   const timing = mode === 'didactic' ? DIDACTIC_TIMING : SPECISH_TIMING
-  const revealTimes: Array<number | null> = [null]
-  for (let t = 0; t <= timing.slotMs; t += 1_000) revealTimes.push(t)
+  const builderFetchTimes: Array<number | null> = [null]
+  for (let t = 0; t <= timing.slotMs; t += 1_000) builderFetchTimes.push(t)
   for (const edge of [timing.aggregateMs - 1, timing.aggregateMs, timing.ptcCutoffMs - 1, timing.ptcCutoffMs, timing.ptcCutoffMs + 1]) {
-    if (!revealTimes.includes(edge)) revealTimes.push(edge)
+    if (!builderFetchTimes.includes(edge)) builderFetchTimes.push(edge)
   }
-  revealTimes.sort((left, right) => {
+  builderFetchTimes.sort((left, right) => {
     if (left === null) return -1
     if (right === null) return 1
     return left - right
   })
 
-  return runRevealSweep(revealTimes, {
-    builderValue: 1_000_000_000_000_000_000n,
-    mode
-  })
+  return runBuilderFetchSweep(
+    builderFetchTimes,
+    {
+      builderValue: 1_000_000_000_000_000_000n,
+      builderAction: 'reveal',
+      mode
+    },
+    options.debugRpc ? { rpcLogger: (message) => console.log(message) } : {}
+  )
 }
 
 function printSweepMarkdown(points: SweepPoint[]): void {
-  console.log('| revealAt | observedByPtcAt | payloadDisposition | payloadStatus | ptcPresent | ptcAbsent | canonicalHead |')
-  console.log('| --- | --- | --- | --- | --- | --- | --- |')
+  console.log('| builderFetchAt | observedByPtcAt | newPayloadStatus | payloadDisposition | payloadStatus | ptcPresent | ptcAbsent | canonicalHead |')
+  console.log('| --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const point of points) {
     console.log(
-      `| ${point.revealAt ?? 'withheld'} | ${point.observedByPtcAt ?? 'none'} | ${point.payloadDisposition} | ${point.payloadStatus} | ${point.ptcPresent} | ${point.ptcAbsent} | ${point.canonicalHead} |`
+      `| ${point.builderFetchAtMs ?? 'withheld'} | ${point.observedByPtcAt ?? 'none'} | ${point.newPayloadStatus ?? 'none'} | ${point.payloadDisposition} | ${point.payloadStatus} | ${point.ptcPresent} | ${point.ptcAbsent} | ${point.canonicalHead} |`
     )
   }
 }
 
 function printSweepCsv(points: SweepPoint[]): void {
-  console.log('revealAt,observedByPtcAt,payloadDisposition,payloadStatus,ptcPresent,ptcAbsent,canonicalHead')
+  console.log('builderFetchAt,observedByPtcAt,newPayloadStatus,payloadDisposition,payloadStatus,ptcPresent,ptcAbsent,canonicalHead')
   for (const point of points) {
     console.log(
-      `${point.revealAt ?? 'withheld'},${point.observedByPtcAt ?? 'none'},${point.payloadDisposition},${point.payloadStatus},${point.ptcPresent},${point.ptcAbsent},${point.canonicalHead}`
+      `${point.builderFetchAtMs ?? 'withheld'},${point.observedByPtcAt ?? 'none'},${point.newPayloadStatus ?? 'none'},${point.payloadDisposition},${point.payloadStatus},${point.ptcPresent},${point.ptcAbsent},${point.canonicalHead}`
     )
   }
 }
 
 function printSweepMatrix(points: SweepPoint[]): void {
-  const headers = ['revealAt', 'observedByPtcAt', 'payloadDisposition', 'payloadStatus', 'ptcPresent', 'ptcAbsent', 'canonicalHead']
+  const headers = [
+    'builderFetchAt',
+    'observedByPtcAt',
+    'newPayloadStatus',
+    'payloadDisposition',
+    'payloadStatus',
+    'ptcPresent',
+    'ptcAbsent',
+    'canonicalHead'
+  ]
   const rows = points.map((point) => [
-    point.revealAt ?? 'withheld',
+    point.builderFetchAtMs ?? 'withheld',
     point.observedByPtcAt ?? 'none',
+    point.newPayloadStatus ?? 'none',
     point.payloadDisposition,
     point.payloadStatus,
     point.ptcPresent,
@@ -167,12 +183,15 @@ function printSweepMatrix(points: SweepPoint[]): void {
 const options = parseArgs(process.argv.slice(2))
 
 if (options.scenarioSet === 'sweep') {
-  const points = sweepRevealTimes(options.mode)
+  const points = await sweepBuilderFetchTimes(options.mode)
   if (options.format === 'csv') printSweepCsv(points)
   else if (options.format === 'markdown') printSweepMarkdown(points)
   else printSweepMatrix(points)
 } else {
-  const results = runAllScenarios(options.mode)
+  const results = await runAllScenarios(
+    options.mode,
+    options.debugRpc ? { rpcLogger: (message) => console.log(message) } : {}
+  )
   if (options.format === 'timeline') {
     for (const result of results) printScenario(result)
   } else {

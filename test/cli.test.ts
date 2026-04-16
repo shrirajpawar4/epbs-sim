@@ -9,15 +9,16 @@ function runCli(args: string[]): string {
 }
 
 describe('CLI output', () => {
-  it('prints the scenario timeline in milestone order', () => {
+  it('prints the engine-backed scenario timeline in milestone order', () => {
     const output = runCli([])
 
-    expect(output).toContain('MEV-Boost contrast')
-    expect(output).toContain('SLOT 1  HAPPY_PATH  [spec-ish]')
-    expect(output).toContain('Signed beacon block header broadcast')
-    expect(output).toContain('PTC votes on payload timeliness')
+    expect(output).toContain('Engine boundary')
+    expect(output).toContain('Mock Engine API: http://127.0.0.1:')
+    expect(output).toContain('SLOT 1  HAPPY-PATH  [spec-ish]')
+    expect(output).toContain('Proposer calls engine_forkchoiceUpdatedV3')
+    expect(output).toContain('Builder calls engine_getPayloadV3')
+    expect(output).toContain('Validator calls engine_newPayloadV3')
     expect(output).toContain('Payload disposition: TIMELY_VALID')
-    expect(output).toContain('Fork-choice view: arrived=true')
     expect(output).toContain('Canonical head after slot 2: WITH_PAYLOAD')
   })
 
@@ -25,15 +26,25 @@ describe('CLI output', () => {
     const output = runCli(['--format=matrix'])
 
     expect(output).toContain('scenario')
-    expect(output).toContain('builder_withholds')
-    expect(output).toContain('WITHOUT_PAYLOAD')
+    expect(output).toContain('equivocation')
+    expect(output).toContain('EQUIVOCATED')
+    expect(output).toContain('payloadId')
   })
 
-  it('prints sweep output in markdown and csv', () => {
+  it('prints sweep output in markdown and csv using builder fetch timing', () => {
     const markdown = runCli(['--sweep', '--format=markdown'])
     const csv = runCli(['--sweep', '--format=csv'])
 
-    expect(markdown).toContain('| revealAt | observedByPtcAt | payloadDisposition | payloadStatus |')
-    expect(csv).toContain('revealAt,observedByPtcAt,payloadDisposition,payloadStatus,ptcPresent,ptcAbsent,canonicalHead')
+    expect(markdown).toContain('| builderFetchAt | observedByPtcAt | newPayloadStatus | payloadDisposition |')
+    expect(csv).toContain('builderFetchAt,observedByPtcAt,newPayloadStatus,payloadDisposition,payloadStatus,ptcPresent,ptcAbsent,canonicalHead')
+  })
+
+  it('prints JSON-RPC requests and responses in debug mode', () => {
+    const output = runCli(['--debug-rpc'])
+
+    expect(output).toContain('[rpc] -> http://127.0.0.1:')
+    expect(output).toContain('"method":"engine_forkchoiceUpdatedV3"')
+    expect(output).toContain('[rpc] <- http://127.0.0.1:')
+    expect(output).toContain('"jsonrpc":"2.0"')
   })
 })
